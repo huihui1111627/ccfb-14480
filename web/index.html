@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>化合物结构数据库</title>
+<style>
+  :root { --bd:#d8dee9; --ac:#2563eb; --bg:#f8fafc; --ar:#d97706; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         color:#1f2937; background:var(--bg); }
+  header { background:#111827; color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; color:#9ca3af; }
+  .wrap { display:grid; grid-template-columns:380px 1fr; gap:18px; padding:18px 24px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:16px; }
+  .card h2 { font-size:14px; margin:0 0 10px; color:#374151; }
+  textarea, input { width:100%; padding:9px 10px; border:1px solid var(--bd);
+                    border-radius:7px; font-family:Menlo,monospace; font-size:14px; }
+  textarea { min-height:46px; resize:vertical; }
+  button { background:var(--ac); color:#fff; border:0; border-radius:7px;
+           padding:9px 14px; font-size:13px; cursor:pointer; margin:8px 6px 0 0; }
+  button.sec { background:#475569; }
+  button:hover { opacity:.9; }
+  .row { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  .muted { color:#6b7280; font-size:12px; }
+  .err { color:#dc2626; font-size:13px; margin-top:8px; white-space:pre-wrap; }
+  .ok { color:#059669; font-size:13px; margin-top:8px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+  th,td { text-align:left; padding:5px 7px; border-bottom:1px solid #eef2f7; }
+  th { color:#6b7280; font-weight:600; }
+  .mono { font-family:Menlo,monospace; }
+  canvas { width:100%; height:340px; background:#fcfdff; border:1px solid #eef2f7;
+           border-radius:8px; }
+  .hit { cursor:pointer; }
+  .hit:hover { background:#eff6ff; }
+  .tag { display:inline-block; background:#eef2ff; color:#4338ca; border-radius:5px;
+         padding:1px 7px; font-size:11px; margin-right:4px; }
+  .legend { font-size:12px; color:#6b7280; margin-top:6px; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:2px;
+            vertical-align:middle; margin:0 4px 0 10px; }
+  .scroll { max-height:430px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>化合物结构数据库 · 纯 Python 实现</h1>
+  <p>自解析线性结构式 · 凯库勒/芳香归一 · 路径指纹筛选 · 化学语义子结构匹配 · Tanimoto 相似性</p>
+</header>
+<div class="wrap">
+  <div>
+    <div class="card">
+      <h2>① 结构式解析</h2>
+      <textarea id="smi" placeholder="例如 c1ccccc1 或 CC(=O)Oc1ccccc1C(=O)O">c1ccc(CC)cc1</textarea>
+      <div class="row">
+        <button onclick="doParse(false)">解析分子图</button>
+        <button class="sec" onclick="doParse(true)">按查询片段解析</button>
+      </div>
+      <div id="parseMsg"></div>
+      <div class="legend">
+        支持：原子/键级/支链/环闭合/电荷/同位素/芳香小写/隐式与显式氢；
+        查询扩展：<span class="tag">* 任意原子</span><span class="tag">a 芳香原子</span>
+        <span class="tag">~ 任意键</span><span class="tag">-r 环内键</span><span class="tag">-k 链键</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>② 子结构查询</h2>
+      <input id="q" value="c1ccccc1" placeholder="输入片段，如 c1ccncc1、C(=O)O、c~rc">
+      <div class="row">
+        <button onclick="doSub()">查找包含片段的分子</button>
+      </div>
+      <div id="subMsg" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>③ 相似性查询</h2>
+      <input id="sim" value="c1ccccc1">
+      <div class="row">
+        <label class="muted">Tanimoto 阈值</label>
+        <input id="thr" type="number" min="0" max="1" step="0.05" value="0.4"
+               style="width:90px">
+        <button onclick="doSim()">查找相似分子</button>
+      </div>
+      <div id="simMsg" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>④ 入库</h2>
+      <input id="add" placeholder="输入结构式加入数据库（按规范形式去重）">
+      <div class="row"><button onclick="doAdd()">加入数据库</button></div>
+      <div id="addMsg"></div>
+      <div class="row"><button class="sec" onclick="loadScaffolds()">刷新骨架统计</button>
+        <span id="stat" class="muted"></span></div>
+      <div id="scaffolds"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2 id="canvasTitle">分子图可视化</h2>
+      <canvas id="cv" width="760" height="340"></canvas>
+      <div class="legend">
+        <span class="swatch" style="background:#2563eb"></span>芳香/匹配高亮
+        <span class="swatch" style="background:#d97706"></span>芳香原子
+        <span class="swatch" style="background:#374151"></span>脂肪原子
+        双键/三键以平行线表示，环内键略加粗。
+      </div>
+      <div id="atomTable"></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2 id="resultTitle">查询结果</h2>
+      <div id="results" class="scroll muted">在左侧输入并查询。</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let currentMol = null, currentHighlight = new Set();
+
+async function post(url, body) {
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                              body: JSON.stringify(body)});
+  return r.json();
+}
+function show(el, cls, text) { el.className = cls; el.textContent = text; }
+
+// ---------- 分子图力导向布局 ----------
+function layout(mol) {
+  const n = mol.atoms.length;
+  const pos = mol.atoms.map((_, i) => {
+    const ang = 2 * Math.PI * i / Math.max(1, n);
+    return {x: 380 + 130 * Math.cos(ang), y: 170 + 120 * Math.sin(ang)};
+  });
+  const vel = pos.map(() => ({x:0, y:0}));
+  const ringSet = new Set();
+  mol.bonds.forEach(b => { if (b.in_ring) { ringSet.add(b.a1); ringSet.add(b.a2); } });
+  // 初始：环内原子优先摆成正多边形
+  const ringAtoms = [...ringSet];
+  ringAtoms.forEach((ai, k) => {
+    const ang = 2 * Math.PI * k / ringAtoms.length - Math.PI/2;
+    pos[ai] = {x: 300 + 95*Math.cos(ang), y: 165 + 95*Math.sin(ang)};
+  });
+  const k = 70, rep = 9000;
+  for (let iter = 0; iter < 260; iter++) {
+    const force = pos.map(() => ({x:0, y:0}));
+    for (let i = 0; i < n; i++) for (let j = i+1; j < n; j++) {
+      let dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+      let d2 = dx*dx + dy*dy + 0.01;
+      const f = rep / d2;
+      const d = Math.sqrt(d2);
+      force[i].x += f * dx/d; force[i].y += f * dy/d;
+      force[j].x -= f * dx/d; force[j].y -= f * dy/d;
+    }
+    mol.bonds.forEach(b => {
+      const dx = pos[b.a2].x - pos[b.a1].x, dy = pos[b.a2].y - pos[b.a1].y;
+      const d = Math.sqrt(dx*dx + dy*dy) + 0.01;
+      const f = (d - k) * 0.05;
+      force[b.a1].x += f * dx/d; force[b.a1].y += f * dy/d;
+      force[b.a2].x -= f * dx/d; force[b.a2].y -= f * dy/d;
+    });
+    for (let i = 0; i < n; i++) {
+      vel[i].x = (vel[i].x + force[i].x) * 0.85;
+      vel[i].y = (vel[i].y + force[i].y) * 0.85;
+      pos[i].x += vel[i].x; pos[i].y += vel[i].y;
+      pos[i].x = Math.max(30, Math.min(730, pos[i].x));
+      pos[i].y = Math.max(28, Math.min(312, pos[i].y));
+    }
+  }
+  return pos;
+}
+
+function draw(mol, highlight) {
+  currentMol = mol; currentHighlight = new Set(highlight || []);
+  const cv = $("cv"), ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!mol) return;
+  const pos = layout(mol);
+  // 先画键
+  mol.bonds.forEach(b => {
+    const p1 = pos[b.a1], p2 = pos[b.a2];
+    const hl = currentHighlight.has(b.a1) && currentHighlight.has(b.a2);
+    ctx.strokeStyle = hl ? "#2563eb" : "#4b5563";
+    ctx.lineWidth = b.in_ring ? 2.4 : 1.6;
+    const drawLine = off => {
+      const dx = p2.x-p1.x, dy = p2.y-p1.y, L = Math.hypot(dx,dy)||1;
+      const nx = -dy/L*off, ny = dx/L*off;
+      ctx.beginPath();
+      ctx.moveTo(p1.x+nx, p1.y+ny); ctx.lineTo(p2.x+nx, p2.y+ny); ctx.stroke();
+    };
+    if (b.order === 2) { drawLine(-3); drawLine(3); }
+    else if (b.order === 3) { drawLine(-4.5); drawLine(0); drawLine(4.5); }
+    else if (b.order === 4) { ctx.setLineDash([5,3]); drawLine(0); ctx.setLineDash([]); }
+    else drawLine(0);
+  });
+  // 再画原子
+  mol.atoms.forEach(a => {
+    const p = pos[a.index];
+    const hl = currentHighlight.has(a.index);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, hl ? 17 : 14, 0, 2*Math.PI);
+    ctx.fillStyle = hl ? "#2563eb" : (a.aromatic ? "#fff7ed" : "#f9fafb");
+    ctx.fill();
+    ctx.lineWidth = hl ? 2 : 1.4;
+    ctx.strokeStyle = hl ? "#1d4ed8" : (a.aromatic ? "#d97706" : "#374151");
+    ctx.stroke();
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.font = "bold 12px Menlo, monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    let label = a.wildcard ? "*" : (a.aromatic_query ? "a"
+              : (a.aliphatic_query ? "A" : a.symbol));
+    if (a.isotope) label = a.isotope + label;
+    if (a.charge) label += (a.charge > 0 ? "+" : "−") + (Math.abs(a.charge)>1?Math.abs(a.charge):"");
+    ctx.fillText(label, p.x, p.y);
+    if (a.total_h > 0 && !a.wildcard) {
+      ctx.font = "10px Menlo"; ctx.fillStyle = "#6b7280";
+      ctx.fillText("H" + (a.total_h>1?a.total_h:""), p.x+15, p.y-11);
+    }
+  });
+  // 原子明细表
+  $("atomTable").innerHTML = "<table><tr><th>#</th><th>元素</th><th>芳香</th>"+
+    "<th>电荷</th><th>同位素</th><th>隐式H</th><th>显式H</th></tr>" +
+    mol.atoms.map(a => `<tr><td>${a.index}</td><td class="mono">${a.element}</td>
+      <td>${a.aromatic?"是":"否"}</td><td>${a.charge||""}</td>
+      <td>${a.isotope??""}</td><td>${a.implicit_h}</td><td>${a.explicit_h}</td></tr>`)
+      .join("") + "</table>";
+}
+
+async function doParse(isQuery) {
+  const smi = $("smi").value.trim();
+  const r = await post("/api/parse", {smiles: smi, query: isQuery});
+  if (r.error) { show($("parseMsg"), "err", "解析失败：" + r.error +
+      (r.position? `\n（第 ${r.position} 个字符）`:"")); return; }
+  show($("parseMsg"), "ok", "解析成功 · 规范形式：" + r.canonical +
+      " · 分子式 " + r.mol.formula);
+  $("canvasTitle").textContent = "分子图：" + smi;
+  draw(r.mol, []);
+}
+
+async function doSub() {
+  const smi = $("q").value.trim();
+  const r = await post("/api/substructure", {smiles: smi, limit: 60});
+  if (r.error) { show($("subMsg"), "err", r.error); return; }
+  show($("subMsg"), "muted",
+    `指纹预筛候选 ${r.n_candidates} 个，实际命中 ${r.n_hits} 个（点击行查看高亮）`);
+  $("resultTitle").textContent = "子结构命中（蓝色为匹配原子）";
+  $("results").innerHTML = r.hits.length ? "<table><tr><th>ID</th><th>规范 SMILES</th>"+
+    "<th>分子式</th><th>匹配原子</th></tr>" +
+    r.hits.map((h,k) => `<tr class="hit" onclick='showHit(${k})'>
+      <td>${h.id}</td><td class="mono">${h.canonical}</td>
+      <td>${h.formula}</td><td class="mono">[${h.matched_atoms.join(",")}]</td></tr>`)
+      .join("") + "</table>" : "<span class='muted'>无命中</span>";
+  window._hits = r.hits;
+}
+function showHit(k) {
+  const h = window._hits[k];
+  $("canvasTitle").textContent = "命中分子：" + h.canonical;
+  draw(h.mol, h.matched_atoms);
+}
+
+async function doSim() {
+  const r = await post("/api/similarity", {smiles: $("sim").value.trim(),
+      threshold: parseFloat($("thr").value), limit: 60});
+  if (r.error) { show($("simMsg"), "err", r.error); return; }
+  show($("simMsg"), "muted", `命中 ${r.results.length} 个（按 Tanimoto 降序）`);
+  $("resultTitle").textContent = "相似性查询结果";
+  $("results").innerHTML = r.results.length ? "<table><tr><th>ID</th><th>规范 SMILES</th>"+
+    "<th>分子式</th><th>Tanimoto</th></tr>" +
+    r.results.map(x => `<tr class="hit" onclick="quickDraw('${x.canonical}')">
+      <td>${x.id}</td><td class="mono">${x.canonical}</td><td>${x.formula}</td>
+      <td>${x.score.toFixed(3)}</td></tr>`).join("") + "</table>"
+      : "<span class='muted'>无达到阈值的分子</span>";
+}
+async function quickDraw(can) {
+  const r = await post("/api/parse", {smiles: can, query:false});
+  if (!r.error) { $("canvasTitle").textContent = "分子图：" + can; draw(r.mol, []); }
+}
+
+async function doAdd() {
+  const smi = $("add").value.trim();
+  const r = await post("/api/add", {smiles: smi});
+  if (r.error) { show($("addMsg"), "err", r.error); return; }
+  show($("addMsg"), "ok", r.new ? `已入库（id=${r.id}）：${r.canonical}`
+                                : `已存在（id=${r.id}），按规范形式去重`);
+  refreshStat(); loadScaffolds();
+}
+async function refreshStat() {
+  const r = await fetch("/api/stats").then(x => x.json());
+  $("stat").textContent = "当前库大小：" + r.size;
+}
+async function loadScaffolds() {
+  const r = await fetch("/api/scaffolds").then(x => x.json());
+  $("scaffolds").innerHTML = r.length ? "<table><tr><th>出现次数</th><th>骨架</th></tr>" +
+    r.map(x => `<tr><td>${x.count}</td><td class="mono">${x.scaffold||"(无环)"}</td></tr>`)
+      .join("") + "</table>" : "<span class='muted'>暂无骨架数据</span>";
+}
+refreshStat();
+doParse(false);
+</script>
+</body>
+</html>
