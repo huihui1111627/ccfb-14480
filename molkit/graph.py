@@ -68,12 +68,22 @@ class Molecule:
     # 解析/规范化辅助
     adj: Dict[int, List[int]] = field(default_factory=dict)   # atom idx -> bond idx
     fragments: List[List[int]] = field(default_factory=list)  # 连通分量（原子 idx）
+    # 环信息缓存（图结构变化时失效）
+    _ring_cached: bool = False
+    _sssr: List[Set[int]] = field(default_factory=list)
+    _ring_bond_set: Set[int] = field(default_factory=set)
+    _ring_atom_set: Set[int] = field(default_factory=set)
+    _atom_ring_sizes: Dict[int, Set[int]] = field(default_factory=dict)
+
+    def _invalidate_ring_cache(self) -> None:
+        self._ring_cached = False
 
     # ---------- 基础图操作 ----------
     def add_atom(self, atom: Atom) -> int:
         atom.idx = len(self.atoms)
         self.atoms.append(atom)
         self.adj[atom.idx] = []
+        self._invalidate_ring_cache()
         return atom.idx
 
     def add_bond(self, a1: int, a2: int, order: int = 1,
@@ -85,6 +95,7 @@ class Molecule:
         self.bonds.append(b)
         self.adj[a1].append(bi)
         self.adj[a2].append(bi)
+        self._invalidate_ring_cache()
         return b
 
     def bond_between(self, a1: int, a2: int) -> Optional[Bond]:
@@ -134,120 +145,103 @@ class Molecule:
         return m
 
     # ---------- 环检测 ----------
-    def ring_bonds(self) -> Set[int]:
-        """返回所有属于某个环的键的索引（并集，基于 biconnected 分量的简化实现）。"""
-        return set(self._sssr_bond_set())
+    def _ensure_ring_cache(self) -> None:
+        """计算并缓存环信息。
 
-    def ring_atoms(self) -> Set[int]:
-        out: Set[int] = set()
-        for bi in self._sssr_bond_set():
-            b = self.bonds[bi]
-            out.add(b.a1)
-            out.add(b.a2)
-        return out
-
-    def _sssr_bond_set(self) -> List[int]:
-        """最小环基（环的并集足以判定环内/环外，SSSR 不是必需但尺寸小）。
-
-        用每个连通分量的生成树，余边各产生一个基础环；再用高斯消元
-        在线性空间里去掉线性相关的环，保留独立基（SSSR 规模）。
+        对每个连通分量建 BFS 生成树，每条余边（非树边）与树上两节点间
+        的唯一路径组成一个基础环。基础环数 = 余边数 = E - V + C（线性），
+        不做 GF(2) 消元，避免稠环体系的组合爆炸。
+        基础环的并集即所有环内键/原子，足以支持环内/环外与环大小查询；
+        对芳香性识别这类只需“是否存在某尺寸环”的场景也足够。
         """
+        if getattr(self, "_ring_cached", False):
+            return
         self.compute_fragments()
-        basis_cycles: List[Set[int]] = []
+        cycles: List[Set[int]] = []
+        ring_bond_set: Set[int] = set()
+        ring_atom_set: Set[int] = set()
+        atom_ring_sizes: Dict[int, Set[int]] = {}
+
         for comp in self.fragments:
             compset = set(comp)
-            # BFS 生成树
-            parent: Dict[int, Tuple[int, int]] = {}
-            tree_bonds: Set[int] = set()
             root = comp[0]
-            parent[root] = (-1, -1)
+            # BFS 生成树：parent[node] = (父节点, 树键 idx, 深度)
+            parent: Dict[int, Tuple[int, int, int]] = {root: (-1, -1, 0)}
+            tree_bonds: Set[int] = set()
             queue = [root]
             head = 0
             while head < len(queue):
                 x = queue[head]
                 head += 1
                 for bi in self.adj[x]:
-                    y = self.bonds[bi].other(x)
-                    if y not in compset:
+                    b = self.bonds[bi]
+                    y = b.other(x)
+                    if y not in compset or y in parent:
                         continue
-                    if y in parent:
-                        continue
-                    parent[y] = (x, bi)
+                    parent[y] = (x, bi, parent[x][2] + 1)
                     tree_bonds.add(bi)
                     queue.append(y)
-            # 余边 -> 基础环
+
+            # 余边 -> 一个基础环（每条余边只处理一次）
+            seen_chord: Set[int] = set()
             for x in comp:
                 for bi in self.adj[x]:
-                    b = self.bonds[bi]
-                    if bi in tree_bonds or b.a2 != x and b.a1 != x:
-                        pass
-                    y = b.other(x)
-                    if bi in tree_bonds or y < x:
+                    if bi in tree_bonds or bi in seen_chord:
                         continue
-                    # 非树边，沿父链找路径
+                    b = self.bonds[bi]
+                    y = b.other(x)
+                    if y not in compset:
+                        continue
+                    seen_chord.add(bi)
                     cyc = {bi}
                     u, v = x, y
-                    depth_u = self._depth_to(root, u, parent)
-                    depth_v = self._depth_to(root, v, parent)
-                    while depth_u > depth_v:
-                        pu, pbi = parent[u]
-                        cyc.add(pbi)
-                        u = pu
-                        depth_u -= 1
-                    while depth_v > depth_u:
-                        pv, pbi = parent[v]
-                        cyc.add(pbi)
-                        v = pv
-                        depth_v -= 1
+                    du, dv = parent[u][2], parent[v][2]
+                    while du > dv:
+                        pu, pbi, _ = parent[u]
+                        cyc.add(pbi); u = pu; du -= 1
+                    while dv > du:
+                        pv, pbi, _ = parent[v]
+                        cyc.add(pbi); v = pv; dv -= 1
                     while u != v:
-                        pu, pbi1 = parent[u]
-                        pv, pbi2 = parent[v]
-                        cyc.add(pbi1)
-                        cyc.add(pbi2)
+                        pu, pbi1, _ = parent[u]
+                        pv, pbi2, _ = parent[v]
+                        cyc.add(pbi1); cyc.add(pbi2)
                         u, v = pu, pv
-                    basis_cycles.append(cyc)
-        # 高斯消元去线性相关（键集合按 GF(2)）
-        independent: List[Set[int]] = []
-        pivots: Dict[int, Set[int]] = {}
-        for cyc in basis_cycles:
-            cur = set(cyc)
-            while cur:
-                pivot = max(cur)  # 确定性选主元
-                if pivot in pivots:
-                    cur ^= pivots[pivot]
-                else:
-                    pivots[pivot] = cur
-                    independent.append(cur)
-                    break
-        bond_set: Set[int] = set()
-        for cyc in independent:
-            bond_set |= cyc
-        self._sssr = independent
-        return sorted(bond_set)
+                    cycles.append(cyc)
+                    atoms_here: Set[int] = set()
+                    for cbi in cyc:
+                        cb = self.bonds[cbi]
+                        ring_bond_set.add(cbi)
+                        ring_atom_set.add(cb.a1)
+                        ring_atom_set.add(cb.a2)
+                        atoms_here.add(cb.a1)
+                        atoms_here.add(cb.a2)
+                    size = len(atoms_here)
+                    for ai in atoms_here:
+                        atom_ring_sizes.setdefault(ai, set()).add(size)
 
-    @staticmethod
-    def _depth_to(root: int, node: int, parent: Dict[int, Tuple[int, int]]) -> int:
-        d = 0
-        while node != root:
-            node = parent[node][0]
-            d += 1
-        return d
+        self._sssr = cycles
+        self._ring_bond_set = ring_bond_set
+        self._ring_atom_set = ring_atom_set
+        self._atom_ring_sizes = atom_ring_sizes
+        self._ring_cached = True
+
+    def ring_bonds(self) -> Set[int]:
+        """返回所有属于某个基础环的键的索引。"""
+        self._ensure_ring_cache()
+        return set(self._ring_bond_set)
+
+    def ring_atoms(self) -> Set[int]:
+        self._ensure_ring_cache()
+        return set(self._ring_atom_set)
 
     def sssr(self) -> List[Set[int]]:
-        self._sssr_bond_set()
+        self._ensure_ring_cache()
         return self._sssr
 
     def ring_sizes_of_atom(self, i: int) -> Set[int]:
-        out = set()
-        for cyc in self.sssr():
-            atoms = set()
-            for bi in cyc:
-                b = self.bonds[bi]
-                atoms.add(b.a1)
-                atoms.add(b.a2)
-            if i in atoms:
-                out.add(len(atoms))
-        return out
+        self._ensure_ring_cache()
+        return set(self._atom_ring_sizes.get(i, set()))
 
     # ---------- 键价和 ----------
     def bond_valence_sum(self, i: int) -> float:

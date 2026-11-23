@@ -82,48 +82,76 @@ def _bond_code(b) -> str:
 def stable_refine(mol: Molecule, colors: Sequence[int],
                   extra: Optional[Dict[int, int]] = None
                   ) -> List[int]:
+    """迭代 WL 细化到分区稳定。
+
+    收敛判据用“颜色分区（哪些原子同色）”而非颜色数值：
+    排名压缩会重排颜色号，但只要同色原子集合不再变化即达到不动点。
+    """
     prev = list(colors)
+    prev_partition = _partition(prev)
     while True:
         nxt = refine(mol, prev, extra)
-        if nxt == prev:
+        part = _partition(nxt)
+        if part == prev_partition:
             return nxt
         prev = nxt
+        prev_partition = part
+
+
+def _partition(colors: Sequence[int]) -> List[Tuple[int, ...]]:
+    classes: Dict[int, List[int]] = {}
+    for i, c in enumerate(colors):
+        classes.setdefault(c, []).append(i)
+    return sorted(tuple(sorted(v)) for v in classes.values())
 
 
 # --------------------------------------------------------------------------
 # 规范排列（个体优先 + 回溯）
 # --------------------------------------------------------------------------
+# 个体优先回溯的节点预算：超过即回退到 WL 颜色近似（仍确定性）。
+# 每个搜索节点都要跑一轮稳定细化，预算取线性规模以保证大库吞吐。
+def _node_budget(n: int) -> int:
+    return min(3000, max(80, 12 * n))
+
+
 def canonical_permutation(mol: Molecule) -> List[int]:
-    """返回规范排列 perm：perm[k] = 规范位置 k 上的原始原子 idx。"""
+    """返回规范排列 perm：perm[k] = 规范位置 k 上的原始原子 idx。
+
+    优先用个体优先回溯求精确规范排列；若搜索空间超过节点预算，
+    回退到 WL 颜色分区 + 稳定 idx 排序的确定性近似。
+    两种路径对同一输入都产出唯一排列，保证同物同码。
+    """
     n = len(mol.atoms)
     init = _compress(initial_invariants(mol))
     colors = stable_refine(mol, init)
     if len(set(colors)) == n:
         return _order_by_color(colors)
 
-    best: Optional[List[int]] = None
-    # 迭代加深式个体优先：确定性选择最小颜色类细分
-    _search(mol, colors, {}, 0, n, [best])
-    best = _search_best[0]
-    if best is None:
-        # 回退：按颜色与 idx 的稳定排序
-        best = _order_by_color(colors)
-    return best
-
-
-_search_best: List[Optional[List[int]]] = [None]
+    state = {"best": None, "nodes": 0, "budget": _node_budget(n),
+             "aborted": False}
+    _search(mol, colors, {}, 0, n, state)
+    if state["best"] is not None:
+        return state["best"]
+    # 回退：按颜色与 idx 的稳定排序（确定性）
+    return _order_by_color(colors)
 
 
 def _search(mol: Molecule, colors: Sequence[int], extra: Dict[int, int],
-            depth: int, n: int, best_holder: list) -> None:
+            depth: int, n: int, state: dict) -> None:
+    if state["aborted"]:
+        return
+    state["nodes"] += 1
+    if state["nodes"] > state["budget"]:
+        state["aborted"] = True
+        return
     colors = stable_refine(mol, colors, extra if extra else None)
     classes = _color_classes(colors)
     if len(classes) == n:
         perm = _order_by_color(colors)
         cand = _permutation_signature(mol, perm)
-        if best_holder[0] is None or cand < _permutation_signature(
-                mol, best_holder[0]):
-            best_holder[0] = perm
+        if state["best"] is None or cand < _permutation_signature(
+                mol, state["best"]):
+            state["best"] = perm
         return
     # 选元素最少的非平凡颜色类（>1 个原子），在其中个体优先
     target = min((c for c in classes.values() if len(c) > 1),
@@ -131,7 +159,9 @@ def _search(mol: Molecule, colors: Sequence[int], extra: Dict[int, int],
     for atom in target:
         new_extra = dict(extra)
         new_extra[atom] = depth + 1
-        _search(mol, colors, new_extra, depth + 1, n, best_holder)
+        _search(mol, colors, new_extra, depth + 1, n, state)
+        if state["aborted"]:
+            return
 
 
 def _color_classes(colors: Sequence[int]) -> Dict[int, List[int]]:

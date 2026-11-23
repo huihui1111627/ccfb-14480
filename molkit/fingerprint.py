@@ -177,6 +177,22 @@ def fingerprint_bits(mol: Molecule, size: int = FP_SIZE) -> Set[int]:
     return {h % size for h in fingerprint_set(mol)}
 
 
+def concrete_query_bits(mol: Molecule, size: int = FP_SIZE) -> Set[int]:
+    """查询专用：只保留“完全由确定原子与确定键构成”的路径位。
+
+    通配原子 * 能匹配任意元素、通配键 ~ 能匹配任意键，含通配的路径
+    无法对目标产生可排除的约束；若把它们也算进子集判断，反而会误杀
+    （查询位在目标中根本不存在）。这里剔除所有含通配的路径，
+    剩下的确定路径仍满足子集性，保证不漏筛。
+    """
+    bits: Set[int] = set()
+    for sig in enumerate_paths(mol):
+        if "*" in sig or "~" in sig:
+            continue
+        bits.add(_hash_int("path:" + sig) % size)
+    return bits
+
+
 def bitstring(mol: Molecule, size: int = FP_SIZE) -> str:
     bits = fingerprint_bits(mol, size)
     return "".join("1" if i in bits else "0" for i in range(size))

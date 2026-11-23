@@ -20,7 +20,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .aromatic import standardize
 from .canonical import canonicalize, canonical_hash, canonical_smiles
-from .fingerprint import (FP_SIZE, could_meet_threshold, fingerprint_bits,
+from .fingerprint import (FP_SIZE, could_meet_threshold,
+                          concrete_query_bits, fingerprint_bits,
                           is_subset_fp, tanimoto)
 from .graph import Molecule
 from .matcher import prepare_query, substructure_matches
@@ -114,7 +115,8 @@ class MoleculeDatabase:
                             max_matches_per_mol: int = 1
                             ) -> Tuple[List[Dict], SearchStats]:
         qmol = prepare_query(parse_smiles(smiles))
-        qbits = fingerprint_bits(qmol, self.fp_size)
+        # 预筛只含确定原子/键的路径位；通配部分不参与子集判断，避免误杀
+        qbits = concrete_query_bits(qmol, self.fp_size)
         stats = SearchStats(total=len(self.records))
 
         t0 = time.perf_counter()
