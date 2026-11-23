@@ -95,7 +95,7 @@ function layout(graph, width, height) {
   for (let iter = 0; iter < 120; iter++) {
     const force = pos.map(() => ({ x: 0, y: 0 }));
     for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-      const dx = pos[j].x - pos[i].x, dy = pos[j].y - pos[j].y * 0 + pos[j].y - pos[i].y;
+      const dx = pos[j].x - pos[i].x, dy = pos[j].y - pos[i].y;
       const d2 = dx * dx + dy * dy + 0.01;
       const rep = 900 / d2;
       const d = Math.sqrt(d2);
