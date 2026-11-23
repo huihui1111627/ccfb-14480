@@ -69,7 +69,12 @@ hits, stats = db.similarity_search("CCO", threshold=0.6)
 print(db.scaffold_counts(top=10))
 ```
 
-## 验收基准
+## 持久化
+
+`MoleculeDatabase.save/load` 直接序列化**分子图结构**（原子属性 + 边），
+不依赖规范 SMILES 的文本往返，因此稠环取代物等复杂环闭合写法也能无损存取；
+规范 SMILES 文本作为可读的展示字段一并保存。规范 SMILES 对同一分子始终
+确定稳定（同输入同输出），内存图哈希是入库去重的唯一依据。
 
 ```bash
 python3 -I tools/benchmark.py --n 100000 \

@@ -62,12 +62,13 @@ def refine(mol: Molecule, colors: Sequence[int],
     """
     sig: List[str] = []
     for i, a in enumerate(mol.atoms):
-        neigh = sorted(
-            (colors[j],
-             _bond_code(mol.bond_between(i, j), ignore_bond_order))
-            for j in mol.neighbors(i)
-        )
-        s = f"{colors[i]}<{neigh}"
+        pairs = []
+        for bi in mol.adj[i]:
+            j = mol.bonds[bi].other(i)
+            pairs.append((colors[j], _bond_code(mol.bonds[bi],
+                                                 ignore_bond_order)))
+        pairs.sort()
+        s = f"{colors[i]}<{pairs}"
         if extra and i in extra:
             s += f"!{extra[i]}"
         sig.append(s)
@@ -119,9 +120,10 @@ def _partition(colors: Sequence[int]) -> List[Tuple[int, ...]]:
 # 规范排列（个体优先 + 回溯）
 # --------------------------------------------------------------------------
 # 个体优先回溯的节点预算：超过即回退到 WL 颜色近似（仍确定性）。
-# 每个搜索节点都要跑一轮稳定细化，预算取线性规模以保证大库吞吐。
+# 实测绝大多数分子 WL 细化后已全离散，回溯主要用于少数高对称结构；
+# 收紧预算可显著提升大库入库吞吐，回退路径仍保证同物同码。
 def _node_budget(n: int) -> int:
-    return min(3000, max(80, 12 * n))
+    return min(400, max(40, 4 * n))
 
 
 def stable_refine_sigs(mol: Molecule, init_sigs: Sequence[str]
@@ -133,12 +135,13 @@ def stable_refine_sigs(mol: Molecule, init_sigs: Sequence[str]
     while True:
         nxt = []
         for i in range(len(mol.atoms)):
-            neigh = sorted(
-                (current[j], _bond_code(mol.bond_between(i, j),
-                                         ignore_order=True))
-                for j in mol.neighbors(i)
-            )
-            nxt.append(f"{current[i]}<{neigh}")
+            pairs = []
+            for bi in mol.adj[i]:
+                b = mol.bonds[bi]
+                j = b.other(i)
+                pairs.append((current[j], _bond_code(b, ignore_order=True)))
+            pairs.sort()
+            nxt.append(f"{current[i]}<{pairs}")
         part = _partition(_rank_compress(nxt))
         if part == prev_partition:
             return current

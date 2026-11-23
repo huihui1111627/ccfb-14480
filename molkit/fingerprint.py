@@ -18,7 +18,7 @@ from typing import Dict, FrozenSet, List, Set, Tuple
 from .graph import Molecule
 
 FP_SIZE = 1024          # 位串长度（取模空间）
-MAX_PATH_LEN = 7        # 路径最大边数（0..MAX_PATH_LEN）
+MAX_PATH_LEN = 5        # 路径最大边数（0..MAX_PATH_LEN）；短路径已足够预筛
 ENV_RADIUS = 2          # 原子环境（圆形指纹）半径
 
 

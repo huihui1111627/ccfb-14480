@@ -168,5 +168,41 @@ class TestScaffold(unittest.TestCase):
         self.assertTrue(key)  # 非空骨架
 
 
+class TestPersistence(unittest.TestCase):
+    def test_graph_roundtrip_lossless(self):
+        import tempfile
+        import os
+        from molkit.database import MoleculeDatabase
+        db = MoleculeDatabase()
+        # 含稠环取代物（SMILES 文本往返的边界情形）
+        for s in ["CCO", "c1ccccc1", "c1ccc2ccccc2c1C",
+                  "c1cnc2ncnc(N)c2n1", "c1ccoc1"]:
+            db.add_smiles(s)
+        path = tempfile.mktemp(suffix=".json")
+        try:
+            db.save(path)
+            db2 = MoleculeDatabase.load(path)
+            self.assertEqual(len(db), len(db2))
+            for i in range(len(db)):
+                a, b = db.records[i], db2.records[i]
+                self.assertEqual(a.canonical, b.canonical)
+                self.assertEqual(a.fp_bits, b.fp_bits)
+                self.assertEqual(len(a.canon_mol.atoms),
+                                 len(b.canon_mol.atoms))
+                self.assertEqual(len(a.canon_mol.bonds),
+                                 len(b.canon_mol.bonds))
+        finally:
+            os.remove(path)
+
+
+class TestCanonicalDeterminism(unittest.TestCase):
+    def test_repeated_canonical_stable(self):
+        from molkit.canonical import canonical_smiles
+        for s in ["c1ccc2ccccc2c1C", "c1ccccc1", "CC(=O)O",
+                  "c1cnc2ncnc(N)c2n1"]:
+            outs = {canonical_smiles(canonicalize(T(s))) for _ in range(3)}
+            self.assertEqual(len(outs), 1, s)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
