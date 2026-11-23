@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>molkit 化合物结构数据库</title>
+<style>
+  :root { --bd:#d8dee9; --bg:#f7f9fc; --accent:#2563eb; --hl:#f59e0b;
+          --arom:#7c3aed; --ok:#059669; --err:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",
+         system-ui,sans-serif; background:var(--bg); color:#1f2937; }
+  header { background:#111827; color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; color:#9ca3af; }
+  .wrap { max-width:1280px; margin:0 auto; padding:20px 24px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px;
+          padding:16px 18px; margin-bottom:18px; }
+  .card h2 { margin:0 0 12px; font-size:15px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  textarea, input[type=text], input[type=number] {
+    border:1px solid var(--bd); border-radius:8px; padding:9px 11px;
+    font-size:14px; font-family:ui-monospace,Menlo,monospace; }
+  textarea { width:100%; min-height:64px; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px;
+           padding:9px 18px; font-size:14px; cursor:pointer; }
+  button.secondary { background:#4b5563; }
+  button:hover { opacity:.9; }
+  .muted { color:#6b7280; font-size:12px; }
+  .err { color:var(--err); font-size:13px; margin-top:8px; white-space:pre-wrap; }
+  .ok { color:var(--ok); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:900px){ .grid2{grid-template-columns:1fr;} }
+  .molbox { border:1px solid var(--bd); border-radius:8px; padding:8px;
+            background:#fcfdff; overflow:auto; }
+  .molbox h3 { margin:4px 6px; font-size:12px; color:#374151; font-weight:600; }
+  svg { display:block; margin:0 auto; }
+  .atom-label { font-size:12px; font-weight:600; text-anchor:middle;
+                dominant-baseline:central; }
+  .atom-h { fill:#9ca3af; font-size:9px; }
+  .hit-list { max-height:520px; overflow:auto; }
+  .hit { border:1px solid var(--bd); border-radius:8px; padding:8px 10px;
+         margin-bottom:10px; }
+  .hit .meta { font-size:12px; color:#4b5563; margin-bottom:6px;
+               display:flex; justify-content:space-between; gap:8px; }
+  .pill { background:#eef2ff; color:#3730a3; border-radius:999px;
+          padding:2px 9px; font-size:11px; }
+  .stats { font-size:12px; color:#374151; background:#f3f4f6; border-radius:8px;
+           padding:8px 12px; margin-top:10px; }
+  .stats b { color:#111827; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  td,th { border-bottom:1px solid var(--bd); padding:6px 8px; text-align:left; }
+  .legend span { display:inline-flex; align-items:center; margin-right:14px;
+                 font-size:12px; }
+  .swatch { width:14px; height:14px; border-radius:3px; margin-right:5px;
+            display:inline-block; }
+  code { background:#eef2ff; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>molkit 自研化合物结构数据库</h1>
+  <p>线性结构式解析 · 芳香/凯库勒统一 · 规范同物同码 · 指纹子结构与相似性检索（无第三方化学信息学库）</p>
+</header>
+<div class="wrap">
+
+  <div class="card">
+    <h2>1. 结构式解析与分子图</h2>
+    <textarea id="parseInput" placeholder="输入线性结构式，如 c1ccc2ccccc2c1 或 CC(=O)O">[CH3-]c1ccccc1</textarea>
+    <div class="row" style="margin-top:10px">
+      <button onclick="doParse()">解析分子图</button>
+      <button class="secondary" onclick="fillExample('c1ccccc1')">苯</button>
+      <button class="secondary" onclick="fillExample('C1=CC=CC=C1')">凯库勒苯</button>
+      <button class="secondary" onclick="fillExample('c1cc[nH]c1')">吡咯</button>
+      <button class="secondary" onclick="fillExample('CC(=O)[O-].[Na+]')">盐</button>
+    </div>
+    <div id="parseErr" class="err"></div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="molbox"><h3>解析出的原始分子图</h3><div id="rawGraph"></div></div>
+      <div class="molbox"><h3>规范化分子图（同物同码）</h3><div id="canonGraph"></div>
+        <div class="muted" id="canonSmiles" style="padding:6px"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. 子结构查询（片段命中并高亮原子）</h2>
+    <div class="row">
+      <input type="text" id="subInput" value="c1ccccc1" style="flex:1;min-width:240px"
+             placeholder="片段，如 c1ccncc1 / C=O / [CR] / C~C">
+      <button onclick="doSubstructure()">子结构查询</button>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><i class="swatch" style="background:var(--hl)"></i>高亮=匹配原子</span>
+      <span><i class="swatch" style="background:var(--arom)"></i>芳香原子/键</span>
+      <span class="muted">支持 * 任意原子、~ 任意键、@ 环内键、[CR]/[Cr6] 环查询</span>
+    </div>
+    <div id="subErr" class="err"></div>
+    <div id="subStats" class="stats" style="display:none"></div>
+    <div id="subHits" class="hit-list" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>3. 相似性查询（指纹谷本系数）</h2>
+    <div class="row">
+      <input type="text" id="simInput" value="CCO" style="flex:1;min-width:200px">
+      <label class="muted">阈值
+        <input type="number" id="simThreshold" value="0.4" step="0.05"
+               min="0" max="1" style="width:80px"></label>
+      <button onclick="doSimilarity()">相似性查询</button>
+    </div>
+    <div id="simErr" class="err"></div>
+    <div id="simStats" class="stats" style="display:none"></div>
+    <div id="simHits" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>4. 骨架归类与入库</h2>
+    <div class="row">
+      <input type="text" id="addInput" placeholder="输入结构式加入数据库"
+             style="flex:1;min-width:240px">
+      <button onclick="doAdd()">加入数据库</button>
+      <button class="secondary" onclick="loadScaffolds()">刷新骨架统计</button>
+    </div>
+    <div id="addMsg" class="muted" style="margin-top:8px"></div>
+    <table style="margin-top:10px">
+      <thead><tr><th>骨架（Murcko）</th><th style="width:120px">分子数</th></tr></thead>
+      <tbody id="scaffoldBody"></tbody>
+    </table>
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

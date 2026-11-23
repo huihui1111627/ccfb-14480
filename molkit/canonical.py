@@ -30,7 +30,8 @@ def initial_invariants(mol: Molecule) -> List[str]:
     ring_atoms = mol.ring_atoms()
     inv = []
     for a in mol.atoms:
-        ring_sizes = sorted(mol.ring_sizes_of_atom(a.idx))
+        # 只用稳定不变量。注意：SSSR 环尺寸集合依赖生成树选择，等价凯库勒
+        # 布局下可能不同，因此不放入；环成员关系（是否在环内）是稳定的。
         inv.append("|".join([
             a.symbol,
             f"q{a.charge}",
@@ -38,7 +39,6 @@ def initial_invariants(mol: Molecule) -> List[str]:
             f"h{a.total_h}",
             f"d{mol.degree(a.idx)}",
             f"r{1 if a.idx in ring_atoms else 0}",
-            f"rs{','.join(map(str, ring_sizes))}",
             f"w{1 if a.is_wildcard else 0}",
         ]))
     return inv
@@ -52,13 +52,19 @@ def _rank_compress(values: Sequence) -> List[int]:
 
 
 def refine(mol: Molecule, colors: Sequence[int],
-           extra: Optional[Dict[int, int]] = None
+           extra: Optional[Dict[int, int]] = None,
+           ignore_bond_order: bool = False,
            ) -> List[int]:
-    """一轮 WL 细化。extra 是个体优先带来的附加区分标记。"""
+    """一轮 WL 细化。extra 是个体优先带来的附加区分标记。
+
+    ignore_bond_order=True 时邻居键只区分 芳香/通配/普通，不区分单双三键——
+    规范排列必须对等价的凯库勒双键布局保持不变，键级在布局规范化阶段再定。
+    """
     sig: List[str] = []
     for i, a in enumerate(mol.atoms):
         neigh = sorted(
-            (colors[j], _bond_code(mol.bond_between(i, j)))
+            (colors[j],
+             _bond_code(mol.bond_between(i, j), ignore_bond_order))
             for j in mol.neighbors(i)
         )
         s = f"{colors[i]}<{neigh}"
@@ -69,28 +75,32 @@ def refine(mol: Molecule, colors: Sequence[int],
     return _rank_compress(sig)
 
 
-def _bond_code(b) -> str:
+def _bond_code(b, ignore_order: bool = False) -> str:
     if b is None:
         return "?"
     if b.is_wildcard:
         return "~"
     if b.aromatic:
         return ":"
+    if ignore_order:
+        return "b"   # 所有确定的整数键级（单/双/三）在排列阶段等价
     return str(b.order)
 
 
 def stable_refine(mol: Molecule, colors: Sequence[int],
-                  extra: Optional[Dict[int, int]] = None
+                  extra: Optional[Dict[int, int]] = None,
+                  ignore_bond_order: bool = True
                   ) -> List[int]:
     """迭代 WL 细化到分区稳定。
 
-    收敛判据用“颜色分区（哪些原子同色）”而非颜色数值：
-    排名压缩会重排颜色号，但只要同色原子集合不再变化即达到不动点。
+    默认忽略键级：规范排列只依赖元素与连接拓扑，从而对等价的凯库勒
+    双键布局不变。收敛判据用颜色分区（哪些原子同色）而非颜色数值。
     """
     prev = list(colors)
     prev_partition = _partition(prev)
     while True:
-        nxt = refine(mol, prev, extra)
+        nxt = refine(mol, prev, extra,
+                     ignore_bond_order=ignore_bond_order)
         part = _partition(nxt)
         if part == prev_partition:
             return nxt
@@ -114,16 +124,38 @@ def _node_budget(n: int) -> int:
     return min(3000, max(80, 12 * n))
 
 
+def stable_refine_sigs(mol: Molecule, init_sigs: Sequence[str]
+                       ) -> List[str]:
+    """WL 细化，返回每个原子最终的完整签名字符串（内容稳定，不依赖
+    原子输入顺序：相同结构语境必产生相同字符串）。"""
+    current = list(init_sigs)
+    prev_partition = None
+    while True:
+        nxt = []
+        for i in range(len(mol.atoms)):
+            neigh = sorted(
+                (current[j], _bond_code(mol.bond_between(i, j),
+                                         ignore_order=True))
+                for j in mol.neighbors(i)
+            )
+            nxt.append(f"{current[i]}<{neigh}")
+        part = _partition(_rank_compress(nxt))
+        if part == prev_partition:
+            return current
+        prev_partition = part
+        current = nxt
+
+
 def canonical_permutation(mol: Molecule) -> List[int]:
     """返回规范排列 perm：perm[k] = 规范位置 k 上的原始原子 idx。
 
-    优先用个体优先回溯求精确规范排列；若搜索空间超过节点预算，
-    回退到 WL 颜色分区 + 稳定 idx 排序的确定性近似。
-    两种路径对同一输入都产出唯一排列，保证同物同码。
+    以 WL 最终内容签名的字典序排名作为规范序：签名只由元素、连接拓扑与
+    稳定属性决定，与原子输入顺序及等价凯库勒布局无关，因此同构分子
+    （含不同写法）得到相同的规范排列。仍有同签名原子时再个体优先消歧。
     """
     n = len(mol.atoms)
-    init = _compress(initial_invariants(mol))
-    colors = stable_refine(mol, init)
+    final_sigs = stable_refine_sigs(mol, initial_invariants(mol))
+    colors = _rank_compress(final_sigs)
     if len(set(colors)) == n:
         return _order_by_color(colors)
 
@@ -190,7 +222,7 @@ def _permutation_signature(mol: Molecule, perm: List[int]) -> Tuple:
     )
     edge_sig = tuple(sorted(
         (min(pos[b.a1], pos[b.a2]), max(pos[b.a1], pos[b.a2]),
-         _bond_code(b))
+         _bond_code(b, ignore_order=True))
         for b in mol.bonds
     ))
     return atom_sig, edge_sig
@@ -200,126 +232,148 @@ def _permutation_signature(mol: Molecule, perm: List[int]) -> Tuple:
 # 凯库勒布局规范化：同一芳香环的等价双键布局统一
 # --------------------------------------------------------------------------
 def normalize_double_bond_layout(mol: Molecule) -> None:
-    """在规范编号确定后，把每个环内的双键布局按规范位置最小化。
+    """在规范编号确定后，对每个芳香连通体系做全局确定性双键指派。
 
-    对每个 SSSR 环，枚举合法的交替双键指派（完美匹配），
-    选“双键端点规范位置序列”字典序最小的那个。只动环内键，
-    环外键（取代基、羰基等）保持不变。
+    关键：稠环（如萘）的多个环共享键，逐环独立最小化会互相冲突、
+    产生不稳定布局。这里把整个芳香子图作为一个体系，求一次完美匹配，
+    并在所有合法匹配中选“双键边按规范端点排序后字典序最小”的那个，
+    从而与输入写法无关、结果唯一。
     """
     from .aromatic import perceive_aromaticity
-    # 重新感知芳香环（规范图已无 aromatic 标记，靠环+双键识别）
     arom_atoms, arom_bonds = perceive_aromaticity(mol)
     if not arom_bonds:
         return
-    # 规范位置：用当前原子 idx 即可（调用方已重排）
-    for cyc in _independent_rings(mol, arom_bonds):
-        _minimize_ring(mol, cyc)
+    # 计算 DFS 环闭合边（回边）：这些边在输出时只能是裸数字单键，
+    # 因此双键布局要尽量避开它们，把双键安排在树边上。
+    closure_bond_ids: Set[int] = set()
+    for frag in mol.compute_fragments():
+        ring_no, _labels, _parent = _assign_ring_numbers(mol, frag[0])
+        for (u, v) in ring_no:
+            bi = _bond_index(mol, u, v)
+            if bi is not None:
+                closure_bond_ids.add(bi)
+    # 按芳香键的连通性划分芳香体系
+    components = _aromatic_components(mol, arom_atoms, arom_bonds)
+    for comp_atoms in components:
+        comp_bonds = {bi for bi in arom_bonds
+                      if mol.bonds[bi].a1 in comp_atoms
+                      and mol.bonds[bi].a2 in comp_atoms}
+        _minimize_component(mol, comp_atoms, comp_bonds, closure_bond_ids)
 
 
-def _independent_rings(mol: Molecule, arom_bonds: Set[int]) -> List[Set[int]]:
-    rings = []
-    for cyc in mol.sssr():
-        if cyc & arom_bonds:
-            rings.append(cyc)
-    return rings
-
-
-def _minimize_ring(mol: Molecule, cyc: Set[int]) -> None:
-    atoms = sorted({x for bi in cyc for x in
-                    (mol.bonds[bi].a1, mol.bonds[bi].a2)})
-    # 环上的相邻关系
-    adj: Dict[int, List[int]] = {i: [] for i in atoms}
-    for bi in cyc:
+def _aromatic_components(mol: Molecule, arom_atoms: Set[int],
+                         arom_bonds: Set[int]) -> List[Set[int]]:
+    adj: Dict[int, List[int]] = {i: [] for i in arom_atoms}
+    for bi in arom_bonds:
         b = mol.bonds[bi]
         adj[b.a1].append(b.a2)
         adj[b.a2].append(b.a1)
-    # 枚举交替双键：环上选一个极大独立边集，杂原子（O/S/吡咯N）跳过
-    exempt = {i for i in atoms
-              if mol.atoms[i].symbol in ("O", "S")
-              or (mol.atoms[i].symbol == "N" and mol.atoms[i].total_h > 0)}
-    candidates = [i for i in atoms if i not in exempt]
-    best_layout: Optional[Set[int]] = None
-    best_key: Optional[Tuple] = None
+    seen: Set[int] = set()
+    out: List[Set[int]] = []
+    for start in arom_atoms:
+        if start in seen:
+            continue
+        stack = [start]
+        comp: Set[int] = set()
+        seen.add(start)
+        while stack:
+            x = stack.pop()
+            comp.add(x)
+            for y in adj[x]:
+                if y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+        out.append(comp)
+    return out
 
-    def ring_order() -> List[int]:
-        # 从规范位置最小的原子出发绕环，得到确定序列
-        start = min(atoms)
-        seq = [start]
-        prev = -1
-        cur = start
-        while True:
-            nxts = [j for j in adj[cur] if j != prev]
-            if not nxts:
-                break
-            nxt = nxts[0]
-            if nxt == start:
-                break
-            seq.append(nxt)
-            prev, cur = cur, nxt
-        return seq
 
-    seq = ring_order()
-    # 动态规划枚举环上的交替匹配（按 seq 相邻边）
-    edge_of_pair: Dict[Tuple[int, int], int] = {}
-    for bi in cyc:
+def _bond_index(mol: Molecule, a1: int, a2: int) -> Optional[int]:
+    for bi in mol.adj[a1]:
+        if mol.bonds[bi].other(a1) == a2:
+            return bi
+    return None
+
+
+def _minimize_component(mol: Molecule, comp_atoms: Set[int],
+                        comp_bonds: Set[int],
+                        closure_bond_ids: Optional[Set[int]] = None) -> None:
+    """枚举芳香体系上所有合法双键匹配，取全局最优者。
+
+    优化目标（按优先级）：
+    1. 环闭合边（回边）尽量不承载双键——它们在规范 SMILES 里只能写成
+       裸数字单键，双键放树边上才能被解析器无损读回；
+    2. 在满足 1 的布局中，取双键边按规范端点排序后字典序最小者。
+    纯由规范原子编号决定、与输入初始键级无关，因此幂等。
+    """
+    closure_bond_ids = closure_bond_ids or set()
+    sub_adj: Dict[int, List[int]] = {i: [] for i in comp_atoms}
+    for bi in comp_bonds:
         b = mol.bonds[bi]
-        edge_of_pair[(min(b.a1, b.a2), max(b.a1, b.a2))] = bi
+        sub_adj[b.a1].append(b.a2)
+        sub_adj[b.a2].append(b.a1)
 
-    def layout_key(double_bonds: Set[int]) -> Tuple:
-        return tuple(sorted(
-            (min(mol.bonds[bi].a1, mol.bonds[bi].a2),
-             max(mol.bonds[bi].a1, mol.bonds[bi].a2))
-            for bi in double_bonds))
+    # 孤对电子豁免原子（呋喃 O、噻吩 S、吡咯 N 等）
+    exempt = set()
+    for i in comp_atoms:
+        a = mol.atoms[i]
+        if a.symbol in ("O", "S"):
+            exempt.add(i)
+        elif a.symbol == "N" and a.total_h > 0:
+            exempt.add(i)
+    for i in exempt:
+        sub_adj.pop(i, None)
+    for i in list(sub_adj):
+        sub_adj[i] = [j for j in sub_adj[i] if j not in exempt]
 
-    # 环序列上的边索引
-    ring_edges = []
-    L = len(seq)
-    for k in range(L):
-        u, v = seq[k], seq[(k + 1) % L]
-        ring_edges.append(edge_of_pair[(min(u, v), max(u, v))])
-
-    # 回溯枚举完美/近完美匹配（豁免原子不占双键）
+    active = sorted(i for i in comp_atoms if i not in exempt)
+    adj_set: Dict[int, Set[int]] = {i: set(sub_adj.get(i, []))
+                                     for i in active}
     chosen: Set[int] = set()
     used: Set[int] = set()
+    best_key: Optional[Tuple] = None
+    best: Optional[Set[int]] = None
 
-    def enumerate_match(k: int) -> None:
-        nonlocal best_layout, best_key
-        if k == L:
-            # 校验：每个非豁免原子恰好一条双键
-            count: Dict[int, int] = {i: 0 for i in atoms}
-            for bi in chosen:
-                b = mol.bonds[bi]
-                count[b.a1] += 1
-                count[b.a2] += 1
-            if any(count[i] != 1 for i in candidates):
-                return
-            key = layout_key(chosen)
+    def layout_key() -> Tuple:
+        # 第一关键字：落在环闭合边上的双键数（越少越好，理想为 0）；
+        # 第二关键字：双键边端点的规范字典序。
+        closure_doubles = sum(1 for bi in chosen if bi in closure_bond_ids)
+        edges = tuple(sorted(
+            (min(mol.bonds[bi].a1, mol.bonds[bi].a2),
+             max(mol.bonds[bi].a1, mol.bonds[bi].a2))
+            for bi in chosen))
+        return (closure_doubles, edges)
+
+    def backtrack(k: int) -> None:
+        nonlocal best_key, best
+        if k == len(active):
+            key = layout_key()
             if best_key is None or key < best_key:
                 best_key = key
-                best_layout = set(chosen)
+                best = set(chosen)
             return
-        u = seq[k]
-        if u in used or u in exempt:
-            enumerate_match(k + 1)
+        x = active[k]
+        if x in used:
+            backtrack(k + 1)
             return
-        # 选项1：u 与后继 v 成双键（若 v 可用且非豁免）
-        v = seq[(k + 1) % L]
-        bi = ring_edges[k]
-        if v not in used and v not in exempt and v != u:
+        for y in sorted(adj_set.get(x, set())):
+            if y in used:
+                continue
+            bi = _bond_index(mol, x, y)
+            if bi is None or bi not in comp_bonds:
+                continue
             chosen.add(bi)
-            used.add(u)
-            used.add(v)
-            enumerate_match(k + 1)
-            used.discard(u)
-            used.discard(v)
+            used.add(x)
+            used.add(y)
+            backtrack(k + 1)
+            used.discard(x)
+            used.discard(y)
             chosen.discard(bi)
-        # 选项2：u 不在这里成双键（它会与前驱成键，由更早的步处理）
-        enumerate_match(k + 1)
 
-    enumerate_match(0)
-    if best_layout is not None:
-        for bi in cyc:
-            mol.bonds[bi].order = 2 if bi in best_layout else 1
+    backtrack(0)
+    if best is None:
+        return  # 保留原布局，避免破坏
+    for bi in comp_bonds:
+        mol.bonds[bi].order = 2 if bi in best else 1
 
 
 # --------------------------------------------------------------------------
@@ -352,61 +406,120 @@ def canonical_hash(mol: Molecule) -> str:
 
 
 def _emit_smiles(mol: Molecule) -> str:
-    """以规范位置 0 为起点的 DFS 线性化（多片段用 . 连接）。"""
+    """以规范位置 0 为起点的 DFS 线性化（多片段用 . 连接）。
+
+    两遍：先按固定 DFS 顺序找出所有回边并分配环号，记录每个原子要输出的
+    环标签；再发射。环标签紧贴原子（如 C1...C1），不进括号、不加额外连字符。
+    """
     mol.compute_fragments()
     parts = []
-    visited_atoms: Set[int] = set()
-    ring_counter = [0]
-    open_rings: Dict[Tuple[int, int], int] = {}
-
     for frag in sorted(mol.fragments, key=lambda f: (len(f), f[0])):
-        start = frag[0]
-        parts.append(_dfs_emit(mol, start, visited_atoms,
-                               ring_counter, open_rings, -1))
+        ring_no, labels_at, parent = _assign_ring_numbers(mol, frag[0])
+        # 每个原子子树（沿 parent 向下）中出现的环号集合
+        subtree_rings = _subtree_ring_numbers(mol, frag[0], parent,
+                                              labels_at)
+        seen: Set[int] = set()
+        parts.append(_dfs_emit(mol, frag[0], seen, parent, labels_at,
+                               subtree_rings))
     return ".".join(parts)
 
 
-def _dfs_emit(mol: Molecule, i: int, seen: Set[int],
-              ring_counter: List[int], open_rings: Dict[Tuple[int, int], int],
-              parent: int) -> str:
+def _subtree_ring_numbers(mol: Molecule, root: int, parent: dict,
+                          labels_at: Dict[int, List[Tuple[int, int, bool]]]
+                          ) -> Dict[int, Set[int]]:
+    """自底向上汇总每个原子子树内出现的所有环闭合标签号。"""
+    result: Dict[int, Set[int]] = {i: set() for i in range(len(mol.atoms))}
+
+    def walk(i: int) -> Set[int]:
+        rings = {rid for _b, rid, _c in labels_at.get(i, [])}
+        for j in mol.neighbors(i):
+            if parent.get(j) == i:
+                rings |= walk(j)
+        result[i] = rings
+        return rings
+
+    walk(root)
+    return result
+
+
+def _assign_ring_numbers(mol: Molecule, start: int):
+    """DFS 预先分配环号。
+
+    返回 (回边集合, 原子->[(bond, 环号, 是否闭合端)], DFS 父节点表)。
+    回边在 DFS 中后遇到的端点为“闭合端”：开口端写裸数字，
+    闭合端写 键符号+数字（如 C1...C=1），既合法又保留键级。
+    """
+    ring_no: Dict[Tuple[int, int], int] = {}
+    # labels_at: atom -> list of (bond, rid, is_closing)
+    labels_at: Dict[int, List[Tuple[int, int, bool]]] = {}
+    seen: Set[int] = {start}
+    parent = {start: -1}
+    counter = [0]
+    stack = [(start, iter(sorted(mol.neighbors(start))))]
+    while stack:
+        node, it = stack[-1]
+        advanced = False
+        for j in it:
+            edge = (min(node, j), max(node, j))
+            if j == parent[node]:
+                continue
+            if j in seen:
+                if edge in ring_no:
+                    continue
+                counter[0] += 1
+                rid = counter[0]
+                ring_no[edge] = rid
+                b = mol.bond_between(node, j)
+                # node 是当前 DFS 后遇到的闭合端；j 是更早的开口端。
+                # 开口端裸数字，闭合端数字前写键符号（单键省略）。
+                labels_at.setdefault(j, []).append((b, rid, False))
+                labels_at.setdefault(node, []).append((b, rid, True))
+            else:
+                seen.add(j)
+                parent[j] = node
+                stack.append((j, iter(sorted(mol.neighbors(j)))))
+                advanced = True
+                break
+        if not advanced:
+            stack.pop()
+    for i in labels_at:
+        labels_at[i].sort(key=lambda x: x[1])
+    return ring_no, labels_at, parent
+
+
+def _dfs_emit(mol: Molecule, i: int, seen: Set[int], parent: dict,
+              labels_at: Dict[int, List[Tuple[int, int, bool]]],
+              subtree_rings: Optional[Dict[int, Set[int]]] = None) -> str:
     seen.add(i)
     out = [_atom_text(mol, i)]
-    # 先处理连向已访问祖先的环闭合边
-    neighbors = sorted(mol.neighbors(i))
-    ring_edges_here: List[Tuple[int, int]] = []
-    forward: List[int] = []
-    for j in neighbors:
-        if j == parent:
-            continue
-        if j in seen:
-            if (j, i) in open_rings or (i, j) in open_rings:
-                continue
-            ring_counter[0] += 1
-            rid = ring_counter[0]
-            open_rings[(i, j)] = rid
-            ring_edges_here.append((j, rid))
-        else:
-            forward.append(j)
-    for j, rid in ring_edges_here:
+    # 开口端裸数字；闭合端在数字前写键符号（单键省略），保留环内键级。
+    for b, rid, is_closing in labels_at.get(i, []):
+        out.append((_ring_bond_symbol(b) if is_closing else "")
+                   + _ring_label(rid))
+    # 只沿 DFS 树边向下；回边已由环标签表达，不再作为支链输出。
+    children = [j for j in sorted(mol.neighbors(i))
+                if parent.get(j) == i]
+    if subtree_rings is not None and children:
+        # 环骨架延续（子树含环号）排前面优先走主链，取代基（无环号）排后。
+        children.sort(key=lambda j: (0 if subtree_rings.get(j) else 1, j))
+
+    for k, j in enumerate(children):
         b = mol.bond_between(i, j)
-        out.append(_bond_symbol(b) + _ring_label(rid))
-    # 关闭此前在该原子登记的环
-    for (u, v), rid in list(open_rings.items()):
-        if v == i and u != parent:
-            b = mol.bond_between(u, v)
-            out.append(_bond_symbol(b) + _ring_label(rid))
-            del open_rings[(u, v)]
-    forward = sorted(forward)
-    for k, j in enumerate(forward):
-        if j in seen:
-            continue
-        b = mol.bond_between(i, j)
-        child = _dfs_emit(mol, j, seen, ring_counter, open_rings, i)
-        wrap = f"({_bond_symbol(b)}{child})" if k > 0 or ring_edges_here \
-            else f"{_bond_symbol(b)}{child}"
-        out.append(wrap if len(forward) > 1 or ring_edges_here
-                   else f"{_bond_symbol(b)}{child}")
+        child_text = _dfs_emit(mol, j, seen, parent, labels_at,
+                               subtree_rings)
+        piece = f"{_bond_symbol(b)}{child_text}"
+        # 标准 DFS-SMILES：第一个孩子直接延伸，其余孩子一律括号支链。
+        out.append(piece if k == 0 else f"({piece})")
     return "".join(out)
+
+
+def _ring_bond_symbol(b) -> str:
+    """闭合端环键符号：单键省略，双/三/芳香显式。"""
+    if b.is_wildcard:
+        return "~"
+    if b.aromatic:
+        return ":"
+    return {1: "", 2: "=", 3: "#"}.get(b.order, "")
 
 
 def _atom_text(mol: Molecule, i: int) -> str:

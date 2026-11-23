@@ -35,29 +35,45 @@ RING_FRAGMENTS = [
 
 # 官能团/侧链片段（写成带一个连接点的形式，连接点用前导原子体现）
 SIDE_FRAGMENTS = [
-    "C", "CC", "CCC", "C(C)C", "O", "N", "F", "Cl", "Br",
-    "C#N", "C=O", "C(=O)O", "C(=O)N", "NO", "N(=O)=O",
-    "OC", "NC", "SC", "C(F)(F)F", "CCl", "CC(=O)O",
-    "C(=O)OC", "N(C)C", "OCC", "CCS",
+    "C", "CC", "CCC", "CCCC", "C(C)C", "C(C)(C)C", "O", "N", "F", "Cl",
+    "Br", "I", "C#N", "C=O", "C(=O)O", "C(=O)N", "NO", "N(=O)=O",
+    "OC", "OCC", "NC", "N(C)C", "SC", "CCS", "C(F)(F)F", "CCl",
+    "CC(=O)O", "C(=O)OC", "C(=O)N(C)C", "OC(=O)C", "CN(C)C",
+    "CCO", "CCN", "CCOC", "CCC(=O)O", "S(=O)(=O)N", "S(=O)(=O)C",
+    "C(=O)NC", "NC(=O)C", "OCCO", "C(F)(F)", "CC(F)(F)F",
+    "C1CCCCC1", "c1ccccc1", "c1ccncc1",
 ]
+
+
+def _carbon_chain(rng: random.Random) -> str:
+    """随机长度的直/支链烷烃片段，扩大结构空间。"""
+    length = rng.randint(1, 6)
+    chain = "C" * length
+    # 随机引入支链
+    out = ""
+    for k, ch in enumerate(chain):
+        out += ch
+        if 0 < k < length - 1 and rng.random() < 0.3:
+            out += "(C)"
+    return out
 
 
 def _random_smiles(rng: random.Random, max_ring_frags: int = 2) -> str:
     """组装一个随机 SMILES。
 
     以单环骨架为主体，在环原子的取代位上挂侧链；多环通过连接子偶联。
-    侧链优先挂在环上（环原子有开放价），降低价态冲突导致的非法率。
+    侧链来自官能团库或随机碳链，组合空间足以支撑数十万唯一分子。
     """
     n_rings = rng.randint(1, max_ring_frags)
     base = rng.choice(RING_FRAGMENTS)
-    # 环之间通过短连接子偶联
     for _ in range(n_rings - 1):
-        linker = rng.choice(["C", "CC", "O", "N"])
+        linker = rng.choice(["C", "CC", "CCC", "O", "N", "OC", "NC"])
         base = f"{base}{linker}({rng.choice(RING_FRAGMENTS)})"
-    # 在环上挂随机数目的侧链（括号取代，价态由验证兜底）
-    n_side = rng.randint(1, 4)
+    # 随机数目的侧链，混合官能团与随机碳链
+    n_side = rng.randint(1, 5)
     for _ in range(n_side):
-        frag = rng.choice(SIDE_FRAGMENTS)
+        frag = _carbon_chain(rng) if rng.random() < 0.35 \
+            else rng.choice(SIDE_FRAGMENTS)
         base = f"{base}({frag})"
     if rng.random() < 0.04:
         base += "." + rng.choice(["[Na+]", "[Cl-]", "[K+]"])

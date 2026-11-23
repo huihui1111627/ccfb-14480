@@ -222,8 +222,43 @@ class MoleculeDatabase:
         return groups
 
     # ------------------------------------------------------------------
-    # 持久化
+    # 持久化（直接存图结构，不依赖规范 SMILES 的文本往返，
+    # 从而对稠环取代物等复杂环闭合写法也保证无损）
     # ------------------------------------------------------------------
+    @staticmethod
+    def _mol_to_dict(mol: Molecule) -> dict:
+        return {
+            "atoms": [
+                {"symbol": a.symbol, "charge": a.charge,
+                 "isotope": a.isotope, "explicit_h": a.explicit_h,
+                 "implicit_h": a.implicit_h, "wildcard": a.is_wildcard,
+                 "aromatic": a.aromatic}
+                for a in mol.atoms
+            ],
+            "bonds": [
+                {"a1": b.a1, "a2": b.a2, "order": b.order,
+                 "aromatic": b.aromatic, "wildcard": b.is_wildcard}
+                for b in mol.bonds
+            ],
+        }
+
+    @staticmethod
+    def _mol_from_dict(data: dict) -> Molecule:
+        from .graph import Atom, Bond
+        mol = Molecule()
+        for ad in data["atoms"]:
+            mol.add_atom(Atom(
+                idx=-1, symbol=ad["symbol"], charge=ad["charge"],
+                isotope=ad["isotope"], explicit_h=ad["explicit_h"],
+                implicit_h=ad["implicit_h"], is_wildcard=ad["wildcard"],
+                aromatic=ad["aromatic"]))
+        for bd in data["bonds"]:
+            mol.add_bond(bd["a1"], bd["a2"], order=bd["order"],
+                         aromatic=bd["aromatic"],
+                         is_wildcard=bd["wildcard"])
+        mol.compute_fragments()
+        return mol
+
     def save(self, path: str) -> None:
         data = {
             "fp_size": self.fp_size,
@@ -231,6 +266,7 @@ class MoleculeDatabase:
                 {
                     "mol_id": r.mol_id,
                     "canonical": r.canonical,
+                    "graph": self._mol_to_dict(r.canon_mol),
                     "fp_bits": sorted(r.fp_bits),
                     "scaffold": r.scaffold,
                     "sources": r.sources,
@@ -246,7 +282,11 @@ class MoleculeDatabase:
             data = json.load(f)
         db = cls(fp_size=data.get("fp_size", FP_SIZE))
         for item in data["records"]:
-            mol = canonicalize(standardize(parse_smiles(item["canonical"])))
+            if "graph" in item:
+                mol = cls._mol_from_dict(item["graph"])
+            else:
+                # 兼容旧版仅存 SMILES 的数据
+                mol = canonicalize(standardize(parse_smiles(item["canonical"])))
             rec = Record(
                 mol_id=item["mol_id"],
                 canon_mol=mol,
