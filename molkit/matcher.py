@@ -29,19 +29,20 @@ class QueryPrepareError(Exception):
 # 目标芳香性缓存（按对象 id，避免重复 SSSR/感知）
 # --------------------------------------------------------------------------
 def target_aromatic(mol: Molecule) -> Tuple[Set[int], Set[int]]:
-    key = id(mol)
-    cache = target_aromatic._cache  # type: ignore
-    if key in cache:
-        return cache[key]
-    aa, ab = perceive_aromaticity(mol)
-    # 控制缓存规模：超过阈值清空（库检索按分子顺序访问，命中率仍高）
-    if len(cache) > 4096:
-        cache.clear()
-    cache[key] = (aa, ab)
-    return aa, ab
+    """目标分子的芳香原子/键集合，缓存在分子对象自身上。
 
-
-target_aromatic._cache = {}  # type: ignore
+    库内记录的分子对象随数据库长期存活，把结果挂在对象上既避免重复
+    SSSR/芳香感知，也不存在全局缓存的容量淘汰问题。
+    """
+    cached = getattr(mol, "_arom_cache", None)
+    if cached is not None:
+        return cached
+    result = perceive_aromaticity(mol)
+    try:
+        mol._arom_cache = result
+    except Exception:
+        pass
+    return result
 
 
 def prepare_query(mol: Molecule) -> Molecule:
